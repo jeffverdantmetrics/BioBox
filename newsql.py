@@ -181,7 +181,7 @@ try:
 
 	while True:
 	    sql()
-	    time.sleep(300) #take values every 5 min
+	    time.sleep(10) #take values every 10
 
 except KeyboardInterrupt:
 	print('interrupted!')
