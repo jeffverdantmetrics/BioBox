@@ -1,27 +1,20 @@
 
 import minimalmodbus
 import pandas as pd 
-#import plotly
-#import matplotlib.pyplot as plt
 import datetime 
-#import numpy as np
-#import time
-#from dash import Dash, dcc, Input, Output, callback, html
 import requests
 import json
 import os
-#from google.cloud.sql.connector import Connector, IPTypes
 import pymysql
 import time
-
-
-
+import statistics
 
 
 
 
 # initilize soil sensor-----------------------------------------------------
-PORT='/dev/tty/USB0'
+PORT='/dev/ttyUSB0' #on pi
+#PORT="COM3" #on jeffs laptop
 
 #register numbers based on rs458 protocol
 N_reg= 30
@@ -32,10 +25,22 @@ humidity_reg=18
 temp_reg=19
 cond_reg=21
 
+
+
 values=(N_reg,P_reg,K_reg,PH_reg,humidity_reg,temp_reg,cond_reg)
 
 #Set up instrument
-instrument = minimalmodbus.Instrument(PORT,1,mode=minimalmodbus.MODE_RTU)
+tries = 0
+while tries<3:
+	try:
+		instrument = minimalmodbus.Instrument(PORT,1,mode=minimalmodbus.MODE_RTU)
+		tries=4
+	except: 
+		print("not connecting to rs458")
+		time.sleep(30)
+		tries+=1
+
+
 
 instrument.serial.baudrate = 9600
 
@@ -45,10 +50,31 @@ instrument.serial.parity   = minimalmodbus.serial.PARITY_NONE
 instrument.serial.stopbits = 1
 instrument.close_port_after_each_call = True
 instrument.clear_buffers_before_each_transaction = True
-
+n=instrument.read_register(30)
 #--------------------------------------------------------------------
 
+def soilsensor():
+	global df
+	tick=0
+	templist=[]
+	df = pd.DataFrame(templist, columns = ["N","P","K","PH","humidity","temp","cond"]) 
 
+	while tick <10:
+		tick+=1
+		templist=[]
+		for i in values:
+
+			value = instrument.read_register(i)
+			print(value)
+			templist.append(value) #temporary list of all values
+
+		
+		
+		print("templist",templist)
+		print("df", df)
+		df.loc[len(df)] = templist
+		
+	
 
 
 
@@ -56,7 +82,7 @@ instrument.clear_buffers_before_each_transaction = True
 
 #["N","P","K","PH","humidity","temp","cond","time"]
 #Reading soil sensor and pushing to sql server-------------------------------
-def sqlsoilsensor():
+def sql():
 
 
 	cursor.execute("CREATE TABLE IF NOT EXISTS soil_sensor (id INT(11) NOT NULL AUTO_INCREMENT, n FLOAT NOT NULL, p FLOAT NOT NULL, k FLOAT NOT NULL, ph FLOAT NOT NULL, humidity FLOAT NOT NULL, temp FLOAT NOT NULL, cond FLOAT NOT NULL, time TIMESTAMP NOT NULL, PRIMARY KEY (id))")
@@ -68,23 +94,40 @@ def sqlsoilsensor():
 
 
 
-	for x in myresult:
-  			print(x)
+	#for x in myresult:
+  	#		print(x)
 
 		
 	sql="INSERT INTO soil_sensor (n,p,k,ph,humidity,temp,cond,time) VALUES (%s,%s,%s,%s,%s,%s,%s,%s)"
-	a = instrument.read_register(N_reg)
-	b=instrument.read_register(P_reg)
-	c=instrument.read_register(K_reg)
-	d=instrument.read_register(PH_reg)
-	e=instrument.read_register(humidity_reg)
-	f=instrument.read_register(temp_reg)
-	g=instrument.read_register(cond_reg)
-	h=datetime.datetime.now()
+	# tick=0
+	# while tick <10:
+
+			# a = a.ppend(instrument.read_register(N_reg))
+			# b=b.append(instrument.read_register(P_reg))
+			# c=c.append(instrument.read_register(K_reg))
+			# d=d.append(instrument.read_register(PH_reg))
+			# e=e.append(instrument.read_register(humidity_reg)/10)
+			# f=f.append((instrument.read_register(temp_reg))/10)
+			# g=g.append(instrument.read_register(cond_reg))
+			# h=h.append(datetime.datetime.now())
+	soilsensor() #collect 10 values in temp table named df
+		#["N","P","K","PH","humidity","temp","cond","time"]
+	a=df["N"].mean() 
+	b=df["P"].mean() 
+	c=df["K"].mean() 
+	d=df["PH"].mean() 
+	e=df["humidity"].mean()
+	f=df["temp"].mean() 
+	g=df["cond"].mean() 
+	
+	h = datetime.datetime.now()
+	 
+
 	print('time',h)
 	insert=(a,b,c,d,e,f,g,h)
+	print("insert",insert)
 	cursor.execute(sql,insert)
-	connection.commit()
+	connection.commit() 
 		
 
 	#cursor.execute("SELECT * FROM soil_sensor")
@@ -96,11 +139,12 @@ def sqlsoilsensor():
 
 
 #establish connection to mysql AWS databased--------------------------------------------------------
+#def sqlconnect():
 user = 'admin'
-password = 'biobox2024'
-host = 'biobox.cl8ku2sqypva.us-east-2.rds.amazonaws.com'
+password = 'biobox2025'
+host = 'verdant.c72smgcs44df.us-east-1.rds.amazonaws.com'
 port = 3306
-database = 'bioboxtest'
+database = 'biobox'
 
 
 connection = pymysql.connect(
@@ -117,20 +161,30 @@ cursor = connection.cursor()
 
 
 
+#control relays for soil sensor and air gradient --------------------------
+#two 5v gpio pins on pi zero 2 w
+
+
+
+#deal with exceptions - wait and try again
+	#lack of network connectivity
+	#rs458 not reading - to be tested
+
 
 #-------------------------------------------------------------------------
 
 #main loop with keyboard interupt----------------------------------------
 
 print("starting")
-
+#sqlconnect()
 try:
-    while True:
-        sqlsoilsensor()
-        time.sleep(30)
-except KeyboardInterrupt:
-    print('interrupted!')
 
+	while True:
+	    sql()
+	    time.sleep(300) #take values every 5 min
+
+except KeyboardInterrupt:
+	print('interrupted!')
 
 print("ending")
 #---------------------------------------------------------------------------
@@ -140,44 +194,8 @@ print("ending")
 
 #Previous Method of collecting soil sensor data. ---------------------------------------------------
 
-#master data frames
-masterlist=[]
-master_air=[]
-Master=pd.DataFrame(masterlist, columns = ["N","P","K","PH","humidity","temp","cond","time"]) 
-Master_Air=pd.DataFrame(master_air, columns = ['pm01','pm02','pm10','pm003Count','atmp','rhum','rco2','tvoc','timestamp']) 
 
 
-def soilsensor(a):
-	global Master
-
-	templist=[]
-	df = pd.DataFrame(templist, 
-                  columns = ["N","P","K","PH","humidity","temp","cond","time"]) 
-	
-
-	print("got here")
-
-
-
-	templist=[]
-	#print("gothere2")
-	print(df)
-
-	for i in values:
-
-		value = instrument.read_register(i)
-		print(value)
-		templist.append(value) #temporary list of all values
-		print("templist",templist)
-
-		
- 
-		# add time and append using loc methods
-	time = datetime.datetime.now()
-	templist.append(str(time))
-	df.loc[len(df)] = templist
-	
-	
 	#Master=pd.concat([Master,df])
 	#print('master',Master)
 
